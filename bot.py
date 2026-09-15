@@ -12,6 +12,8 @@ import time
 import json
 import asyncio
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
 from typing import Optional
 import aiohttp
@@ -29,6 +31,22 @@ logging.basicConfig(
     format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
     level=logging.WARNING,
 )
+
+# ════════════════════════════════════════════════════════════
+#  RENDER KEEP-ALIVE SERVER (DUMMY SERVER)
+# ════════════════════════════════════════════════════════════
+
+class Dummy(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is Running 24/7 on Render!")
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), Dummy)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
 # ════════════════════════════════════════════════════════════
 #  CONFIG
@@ -852,8 +870,6 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ─── CATCH-ALL COMMAND ROUTER ───────────────────────────────
 
 async def on_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Routes all slash commands not handled by dedicated CommandHandlers.
-    Primary use: admin commands like /all, /vip, /ban, etc."""
     if not update.message or not update.message.text:
         return
     chat_id = update.effective_chat.id
@@ -2026,6 +2042,8 @@ async def poll_loop(app: Application) -> None:
 # ════════════════════════════════════════════════════════════
 
 def main() -> None:
+    keep_alive()  # <--- RENDER DUMMY SERVER START COMMAND
+    
     if not TOKEN:
         raise SystemExit("❌ TOKEN missing!")
 
@@ -2076,3 +2094,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
