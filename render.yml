@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: otp-panel-bot
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bo.py
+    healthCheckPath: /healthcheck
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: BOT_USERNAME
+        value: onlinenonlyscript_bot
+      - key: ADMIN_IDS
+        value: "7178096331"
+      - key: PYTHON_VERSION
+        value: 3.11.9
