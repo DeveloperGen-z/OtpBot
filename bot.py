@@ -134,11 +134,11 @@ DATABASES = {
 
 POLL_INTERVAL = 5
 SMS_LIMIT = 15
-TOKEN = os.environ.get("BOT_TOKEN", "8437134912:AAFPxS63ZgoNF3XH-69EDn0nhBqys-1iAtE")
-BOT_USERNAME = "onlinenonlyscript_bot"
+TOKEN = os.environ.get("BOT_TOKEN", "8627230535:AAHxgtfWW0MDUKuE73xUPyNq9E0OjTbiKX0")
+BOT_USERNAME = "firebaseioOtp_bot"
 DB_FILE = "bot_database.json"
 
-ADMIN_IDS: set[int] = {7178096331,1429768597}
+ADMIN_IDS: set[int] = {7178096331,1429768597,8900748530} 
 
 REQUIRED_CHANNELS = [
     {"username": "earnflowspidy", "url": "https://t.me/earnflowspidy", "name": "Raji Expilot"},
