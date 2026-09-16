@@ -51,6 +51,7 @@ ADMIN_IDS: set[int] = {7178096331, 1429768597, 8900748530}
 
 REQUIRED_CHANNELS = [
     {"username": "earnflowspidy", "url": "https://t.me/earnflowspidy", "name": "Raji Expilot"},
+    {"username": "Ayuxh_spotted01", "url": "https://t.me/Ayuxh_spotted01", "name": "Ayuxh Spotted"},
 ]
 
 FIREBASE_LOG_FILE = "firebase.txt"
