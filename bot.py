@@ -43,11 +43,11 @@ DATABASES = {
 
 POLL_INTERVAL = 5
 SMS_LIMIT = 15
-TOKEN = os.environ.get("BOT_TOKEN", "8627230535:AAHxgtfWW0MDUKuE73xUPyNq9E0OjTbiKX0")
+TOKEN = os.environ.get("BOT_TOKEN", "8888599463:AAEYDaFGwOhmK5XcNdSsSDa9WfedFFmES3U")
 BOT_USERNAME = "firebaseioOtp_bot"
 DB_FILE = "bot_database.json"
 
-ADMIN_IDS: set[int] = {7178096331, 1429768597, 8900748530}
+ADMIN_IDS: set[int] = {7178096331, 1429768597}
 
 # ✅ Both channels — proper dict with "url"
 REQUIRED_CHANNELS = [
@@ -57,9 +57,9 @@ REQUIRED_CHANNELS = [
         "name": "Raji Expilot",
     },
     {
-        "username": "Ayuxh_spotted01",
-        "url": "https://t.me/Ayuxh_spotted01",
-        "name": "Ayuxh Spotted",
+        "username": "mudramintin",
+        "url": "https://t.me/mudramintin",
+        "name": "mudramintin",
     },
 ]
 
